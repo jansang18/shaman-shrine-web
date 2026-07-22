@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+	<title>Fab Shrine Rebuild</title>
+	<style>
+		:root { color-scheme: dark; font-family: "Noto Sans KR", "Malgun Gothic", sans-serif; }
+		html, body, #canvas { width: 100%; height: 100%; margin: 0; border: 0; padding: 0; }
+		body { overflow: hidden; background: #090307; color: #f7ead8; touch-action: none; }
+		#canvas { display: block; opacity: 0; transition: opacity .7s ease; }
+		#canvas.ready { opacity: 1; }
+		#canvas:focus { outline: none; }
+		#entry {
+			position: fixed; inset: 0; z-index: 10; display: grid; place-items: center;
+			background:
+				radial-gradient(circle at 50% 58%, rgba(178, 70, 28, .22), transparent 38%),
+				linear-gradient(180deg, rgba(25, 4, 9, .48), rgba(4, 1, 3, .94)),
+				url("index.png") center / cover no-repeat;
+		}
+		#entry-card { width: min(88vw, 520px); padding: 38px; text-align: center; border: 1px solid rgba(236, 183, 116, .28); border-radius: 18px; background: rgba(13, 4, 7, .82); box-shadow: 0 24px 80px #000; backdrop-filter: blur(10px); }
+		h1 { margin: 0 0 12px; font-size: clamp(28px, 6vw, 48px); font-weight: 500; letter-spacing: .08em; }
+		.subtitle { margin: 0 0 28px; color: #cdbba7; line-height: 1.7; }
+		button { border: 1px solid #d69b61; border-radius: 999px; padding: 13px 30px; color: #fff5e7; background: #762e1d; font: inherit; font-weight: 700; cursor: pointer; }
+		button:hover, button:focus-visible { background: #974328; outline: 2px solid #f4c187; outline-offset: 3px; }
+		#loading { display: none; margin-top: 24px; }
+		#loading-label { margin-bottom: 8px; color: #e2cbb2; }
+		progress { width: 100%; height: 8px; accent-color: #c56b3c; }
+		#error { display: none; margin-top: 22px; padding: 14px; color: #ffd8d0; background: rgba(120, 18, 18, .42); border-radius: 10px; white-space: pre-line; }
+		#retry { display: none; margin-top: 16px; }
+		#controls { position: fixed; left: 50%; bottom: 28px; z-index: 5; transform: translateX(-50%); padding: 12px 18px; border: 1px solid rgba(255,255,255,.16); border-radius: 12px; background: rgba(5, 2, 4, .78); color: #ead8c5; opacity: 0; pointer-events: none; transition: opacity .25s; white-space: nowrap; }
+		#controls.visible { opacity: 1; }
+		#pointer-hint { position: fixed; inset: 0; z-index: 6; display: none; place-items: center; color: white; background: rgba(0,0,0,.46); font-size: clamp(18px, 3vw, 28px); cursor: pointer; }
+		#help { position: fixed; right: 18px; top: 18px; z-index: 4; display: none; width: 40px; height: 40px; padding: 0; }
+	</style>
+	<link id="-gd-engine-icon" rel="icon" type="image/png" href="index.icon.png" />
+<link rel="apple-touch-icon" href="index.apple-touch-icon.png"/>
+
+</head>
+<body>
+	<canvas id="canvas">이 브라우저는 canvas를 지원하지 않습니다.</canvas>
+	<noscript>JavaScript를 활성화해야 신당 공간에 입장할 수 있습니다.</noscript>
+	<section id="entry" aria-labelledby="title">
+		<div id="entry-card">
+			<h1 id="title">신당</h1>
+			<p class="subtitle">설치 없이 브라우저에서 공간을 천천히 둘러보세요.<br>소리를 켜고 전체 화면으로 입장합니다.</p>
+			<button id="enter" type="button">입장하기</button>
+			<div id="loading" aria-live="polite">
+				<div id="loading-label">로딩 준비 중…</div>
+				<progress id="loading-progress"></progress>
+			</div>
+			<div id="error" role="alert"></div>
+			<button id="retry" type="button">다시 시도</button>
+		</div>
+	</section>
+	<div id="controls">WASD·방향키 이동 · 마우스 시점 · Space 점프 · Shift 달리기 · Esc 마우스 해제</div>
+	<div id="pointer-hint">화면을 클릭해 계속</div>
+	<button id="help" type="button" aria-label="조작법 보기">?</button>
+	<script src="index.js"></script>
+	<script>
+		const GODOT_CONFIG = {"args":[],"canvasResizePolicy":2,"emscriptenPoolSize":8,"ensureCrossOriginIsolationHeaders":true,"executable":"index","experimentalVK":false,"fileSizes":{"index.pck":68379220,"index.wasm":39509339},"focusCanvas":true,"gdextensionLibs":[],"godotPoolSize":4};
+		const GODOT_THREADS_ENABLED = false;
+		const engine = new Engine(GODOT_CONFIG);
+		const canvas = document.getElementById('canvas');
+		const entry = document.getElementById('entry');
+		const enter = document.getElementById('enter');
+		const loading = document.getElementById('loading');
+		const loadingLabel = document.getElementById('loading-label');
+		const loadingProgress = document.getElementById('loading-progress');
+		const errorPanel = document.getElementById('error');
+		const retry = document.getElementById('retry');
+		const controls = document.getElementById('controls');
+		const pointerHint = document.getElementById('pointer-hint');
+		const help = document.getElementById('help');
+		let running = false;
+
+		function showFailure(error) {
+			console.error(error);
+			loading.style.display = 'none';
+			errorPanel.style.display = 'block';
+			errorPanel.textContent = error instanceof Error ? error.message : String(error || '알 수 없는 오류가 발생했습니다.');
+			retry.style.display = 'inline-block';
+		}
+
+		function showControls() {
+			controls.classList.add('visible');
+			window.setTimeout(() => controls.classList.remove('visible'), 6000);
+		}
+
+		async function startExperience() {
+			enter.disabled = true;
+			enter.style.display = 'none';
+			loading.style.display = 'block';
+			errorPanel.style.display = 'none';
+			const missing = Engine.getMissingFeatures({ threads: GODOT_THREADS_ENABLED });
+			if (missing.length) {
+				showFailure('WebGL 2.0을 사용할 수 없습니다. 최신 Chrome, Edge 또는 Firefox로 다시 접속해주세요.\n' + missing.join('\n'));
+				return;
+			}
+			try {
+				await engine.startGame({
+					onProgress(current, total) {
+						if (current > 0 && total > 0) {
+							const percent = Math.min(100, Math.round(current / total * 100));
+							loadingProgress.value = current;
+							loadingProgress.max = total;
+							loadingLabel.textContent = `로딩 ${percent}%`;
+						} else {
+							loadingProgress.removeAttribute('value');
+							loadingLabel.textContent = '로딩 중…';
+						}
+					},
+				});
+				running = true;
+				entry.remove();
+				canvas.classList.add('ready');
+				help.style.display = 'block';
+				pointerHint.style.display = 'grid';
+				canvas.focus();
+				showControls();
+			} catch (error) {
+				showFailure(error);
+			}
+		}
+
+		enter.addEventListener('click', startExperience);
+		retry.addEventListener('click', () => window.location.reload());
+		help.addEventListener('click', showControls);
+		pointerHint.addEventListener('click', async () => {
+			pointerHint.style.display = 'none';
+			canvas.focus();
+			try {
+				await canvas.requestPointerLock();
+			} catch (error) {
+				pointerHint.style.display = 'grid';
+				console.warn('Pointer lock was not granted.', error);
+			}
+		});
+		document.addEventListener('pointerlockchange', () => {
+			if (!running) return;
+			pointerHint.style.display = document.pointerLockElement ? 'none' : 'grid';
+		});
+	</script>
+</body>
+</html>
+
